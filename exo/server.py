@@ -22,50 +22,21 @@ try:
     from exo.inference.tinygrad.inference import TinygradDynamicShardInferenceEngine
     from exo.inference.shard import Shard
     from exo.models import build_full_shard, get_repo
-    # Assume ShardDownloader doesn't actively download if path exists locally
-    # If it does, we might need a dummy downloader or modify it
-    # Attempt to import the real one, fall back to dummy if needed or preferred
-    try:
-        # Check if the real downloader exists and handles local paths correctly
-        # This might require inspection of ShardDownloader's code.
-        # For now, we use a dummy for guaranteed local path usage.
-        # from exo.download.shard_download import ShardDownloader
-        pass # Keep using dummy for now
-    except ImportError:
-        logger.warning("Real ShardDownloader not found or import failed. Using DummyShardDownloader.")
-
-    logger.info("Successfully imported exo modules.")
+    # --- Use the default downloader --- 
+    # The default downloader now handles local paths thanks to our modification
+    from exo.download.new_shard_download import new_shard_downloader
+    logger.info("Successfully imported exo modules and default shard downloader.")
 except ImportError as e:
     logger.error(f"Failed to import exo modules: {e}")
     logger.error("Ensure the server is run from the correct directory or PYTHONPATH is set.")
-    sys.exit(1) # Exit if core modules can't be imported
+    sys.exit(1)
 
 # Configuration
-MODEL_ID = "phi-4" # The model we want to serve
+MODEL_ID = "phi-4"
 ENGINE_CLASS_NAME = "TinygradDynamicShardInferenceEngine"
 
-# --- Dummy ShardDownloader ---
-# Ensures local path defined in models.py is used without attempting download.
-class DummyShardDownloader:
-    async def ensure_shard(self, shard: Shard, engine_class_name: str) -> Path:
-        repo_path_str = get_repo(shard.model_id, engine_class_name)
-        if repo_path_str:
-            # Construct the absolute path relative to models.py location
-            models_py_location = Path(__file__).resolve().parent / "models.py" # Path to models.py
-            models_py_dir = models_py_location.parent
-            absolute_path = (models_py_dir / repo_path_str).resolve()
-            logger.info(f"Resolved model path for {shard.model_id} ({engine_class_name}): {absolute_path}")
-            if absolute_path.exists() and absolute_path.is_dir():
-                logger.info(f"Using local model path: {absolute_path}")
-                return absolute_path
-            else:
-                logger.error(f"Local model path specified in models.py not found or not a directory: {absolute_path}")
-                raise FileNotFoundError(f"Local model path not found: {absolute_path}")
-        logger.error(f"No repository path defined in models.py for {shard.model_id} and {engine_class_name}")
-        raise ValueError(f"No repository path defined for {shard.model_id} and {engine_class_name}")
-
-# --- Initialize Engine ---
-shard_downloader = DummyShardDownloader()
+# --- Initialize Engine with Default Downloader ---
+shard_downloader = new_shard_downloader() # Use the default factory
 inference_engine = TinygradDynamicShardInferenceEngine(shard_downloader)
 # Build the specific shard for phi-4 using tinygrad engine
 phi4_shard = build_full_shard(MODEL_ID, ENGINE_CLASS_NAME)

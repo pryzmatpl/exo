@@ -285,14 +285,49 @@ class CachedShardDownloader(ShardDownloader):
 
 class NewShardDownloader(ShardDownloader):
   def __init__(self, max_parallel_downloads: int = 8):
+    super().__init__()
     self.max_parallel_downloads = max_parallel_downloads
-    self._on_progress = AsyncCallbackSystem[str, Tuple[Shard, RepoProgressEvent]]()
+    self._on_progress = AsyncCallbackSystem()
 
   @property
   def on_progress(self) -> AsyncCallbackSystem[str, Tuple[Shard, RepoProgressEvent]]:
     return self._on_progress
 
   async def ensure_shard(self, shard: Shard, inference_engine_name: str) -> Path:
+    repo_id_or_path = get_repo(shard.model_id, inference_engine_name)
+    if not repo_id_or_path:
+        raise ValueError(f"No repo/path found for {shard.model_id=} and inference engine {inference_engine_name}")
+
+    # Check if repo_id_or_path looks like a potential local path
+    # Simple check: contains slashes, indicating it's not just a plain HF repo ID like 'org/model'
+    # More robust checks could be added (e.g., isabs, starts with './', '../')
+    is_potential_local_path = "/" in repo_id_or_path or "\\" in repo_id_or_path
+
+    if is_potential_local_path:
+        try:
+            # Resolve the path relative to the location of models.py
+            # Assuming models.py is in the parent directory of this file's directory (exo/exo/)
+            models_py_dir = Path(__file__).resolve().parent.parent
+            local_path = (models_py_dir / repo_id_or_path).resolve()
+
+            if DEBUG >= 1: print(f"Potential local path detected for {shard.model_id}: {repo_id_or_path} -> Resolved to: {local_path}")
+
+            # Check if the resolved path exists and is a directory
+            if await aios.path.exists(local_path) and await aios.path.isdir(local_path):
+                if DEBUG >= 1: print(f"Using existing local path: {local_path}")
+                # TODO: Optionally trigger a progress event indicating completion?
+                # self._on_progress.trigger_all(shard, completed_progress_event)
+                return local_path
+            else:
+                 if DEBUG >= 1: print(f"Resolved local path {local_path} does not exist or is not a directory. Proceeding with download logic.")
+        except Exception as e:
+            # Log error if path resolution/check fails, but proceed to download logic
+            if DEBUG >= 1:
+                print(f"Error checking local path {repo_id_or_path}: {e}. Proceeding with download logic.")
+                # traceback.print_exc()
+
+    # If it's not a local path or the local path check failed/didn't exist, call download_shard
+    if DEBUG >= 2: print(f"Local path check failed or path is remote ID. Calling download_shard for {repo_id_or_path}")
     target_dir, _ = await download_shard(shard, inference_engine_name, self.on_progress, max_parallel_downloads=self.max_parallel_downloads)
     return target_dir
 
