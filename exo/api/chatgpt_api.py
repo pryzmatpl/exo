@@ -67,35 +67,42 @@ def generate_completion(
   finish_reason: Union[Literal["length", "stop"], None],
   object_type: Literal["chat.completion", "text_completion"],
 ) -> dict:
-  completion = {
-    "id": f"chatcmpl-{request_id}",
-    "object": object_type,
-    "created": int(time.time()),
-    "model": chat_request.model,
-    "system_fingerprint": f"exo_{VERSION}",
-    "choices": [{
-      "index": 0,
-      "message": {"role": "assistant", "content": tokenizer.decode(tokens)},
-      "logprobs": None,
-      "finish_reason": finish_reason,
-    }],
-  }
-
-  if not stream:
-    completion["usage"] = {
-      "prompt_tokens": len(tokenizer.encode(prompt)),
-      "completion_tokens": len(tokens),
-      "total_tokens": len(tokenizer.encode(prompt)) + len(tokens),
+  decoded_text = tokenizer.decode(tokens)
+  
+  if stream:
+    completion = {
+      "id": f"chatcmpl-{request_id}",
+      "object": object_type,
+      "created": int(time.time()),
+      "model": chat_request.model,
+      "choices": [{
+        "index": 0,
+        "delta": {
+          "content": decoded_text
+        },
+        "finish_reason": finish_reason
+      }]
     }
-
-  choice = completion["choices"][0]
-  if object_type.startswith("chat.completion"):
-    key_name = "delta" if stream else "message"
-    choice[key_name] = {"role": "assistant", "content": tokenizer.decode(tokens)}
-  elif object_type == "text_completion":
-    choice["text"] = tokenizer.decode(tokens)
   else:
-    ValueError(f"Unsupported response type: {object_type}")
+    completion = {
+      "id": f"chatcmpl-{request_id}",
+      "object": object_type,
+      "created": int(time.time()),
+      "model": chat_request.model,
+      "choices": [{
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": decoded_text
+        },
+        "finish_reason": finish_reason
+      }],
+      "usage": {
+        "prompt_tokens": len(tokenizer.encode(prompt)),
+        "completion_tokens": len(tokens),
+        "total_tokens": len(tokenizer.encode(prompt)) + len(tokens),
+      }
+    }
 
   return completion
 
@@ -373,6 +380,22 @@ class ChatGPTAPI:
         await response.prepare(request)
 
         try:
+          # Send initial message with role
+          initial_completion = {
+            "id": f"chatcmpl-{request_id}",
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": chat_request.model,
+            "choices": [{
+              "index": 0,
+              "delta": {
+                "role": "assistant"
+              },
+              "finish_reason": None
+            }]
+          }
+          await response.write(f"data: {json.dumps(initial_completion)}\n\n".encode())
+
           # Stream tokens while waiting for inference to complete
           while True:
             if DEBUG >= 2: print(f"[ChatGPTAPI] Waiting for token from queue: {request_id=}")
@@ -404,6 +427,8 @@ class ChatGPTAPI:
             await response.write(f"data: {json.dumps(completion)}\n\n".encode())
 
             if is_finished:
+              # Send final [DONE] message
+              await response.write(b"data: [DONE]\n\n")
               break
 
           await response.write_eof()
