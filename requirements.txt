@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+pydantic
+numpy
+# Add other existing exo dependencies below if known or from setup.py
+# tinygrad needs to be installed as per exo instructions 
