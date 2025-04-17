@@ -149,7 +149,10 @@ model_cards = {
   "stable-diffusion-2-1-base": { "layers": 31, "repo": { "MLXDynamicShardInferenceEngine": "stabilityai/stable-diffusion-2-1-base" } },
   # phi
   "phi-3.5-mini": { "layers": 32, "repo": { "MLXDynamicShardInferenceEngine": "mlx-community/Phi-3.5-mini-instruct-4bit", }, },
-  "phi-4": { "layers": 40, "repo": { "MLXDynamicShardInferenceEngine": "mlx-community/phi-4-4bit", "TinygradDynamicShardInferenceEngine": "../../models/phi4" }, },
+  "phi-4": { "layers": 40, "repo": { 
+    "MLXDynamicShardInferenceEngine": "mlx-community/phi-4-4bit", 
+    "TinygradDynamicShardInferenceEngine": "/models/phi4" 
+  }, },
   # dummy
   "dummy": { "layers": 8, "repo": { "DummyInferenceEngine": "dummy", }, },
 }

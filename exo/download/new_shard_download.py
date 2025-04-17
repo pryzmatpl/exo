@@ -184,13 +184,22 @@ async def get_weight_map(repo_id: str, revision: str = "main") -> Dict[str, str]
   return index_data.get("weight_map")
 
 async def resolve_allow_patterns(shard: Shard, inference_engine_classname: str) -> List[str]:
-  try:
-    weight_map = await get_weight_map(get_repo(shard.model_id, inference_engine_classname))
-    return get_allow_patterns(weight_map, shard)
-  except:
-    if DEBUG >= 1: print(f"Error getting weight map for {shard.model_id=} and inference engine {inference_engine_classname}")
-    if DEBUG >= 1: traceback.print_exc()
-    return ["*"]
+    repo_id = get_repo(shard.model_id, inference_engine_classname)
+    if not repo_id:
+        return ["*"]
+        
+    # If it looks like a local path, return ["*"] to allow all files
+    if "/" in repo_id or "\\" in repo_id:
+        if DEBUG >= 1: print(f"Local path detected for {shard.model_id}, allowing all files")
+        return ["*"]
+        
+    try:
+        weight_map = await get_weight_map(repo_id)
+        return get_allow_patterns(weight_map, shard)
+    except:
+        if DEBUG >= 1: print(f"Error getting weight map for {shard.model_id=} and inference engine {inference_engine_classname}")
+        if DEBUG >= 1: traceback.print_exc()
+        return ["*"]
 
 async def get_downloaded_size(path: Path) -> int:
   partial_path = path.with_suffix(path.suffix + ".partial")
