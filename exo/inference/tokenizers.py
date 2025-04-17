@@ -45,6 +45,24 @@ async def _resolve_tokenizer(repo_id_or_local_path: str) -> AutoTokenizer:
         if model_name:
             if DEBUG >= 1: print(f"Loading tokenizer for local model {repo_id_or_local_path} using {model_name}")
             tokenizer = AutoTokenizer.from_pretrained(model_name)
+            
+            # Add chat template for Phi4
+            if repo_id_or_local_path == "/models/phi4":
+                tokenizer.chat_template = (
+                    "{% for message in messages %}"
+                    "{% if message['role'] == 'user' %}"
+                    "Human: {{ message['content'] }}\n\n"
+                    "{% elif message['role'] == 'assistant' %}"
+                    "Assistant: {{ message['content'] }}\n\n"
+                    "{% elif message['role'] == 'system' %}"
+                    "System: {{ message['content'] }}\n\n"
+                    "{% endif %}"
+                    "{% endfor %}"
+                    "{% if add_generation_prompt %}"
+                    "Assistant:"
+                    "{% endif %}"
+                )
+            
             _tokenizer_cache[repo_id_or_local_path] = tokenizer
             return tokenizer
         raise ValueError(f"Unsupported local model path: {repo_id_or_local_path}. Add mapping in _get_model_name_for_local_path.")
