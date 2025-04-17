@@ -6,6 +6,13 @@ import os
 from pathlib import Path
 import sys
 import logging
+import json
+import argparse
+from typing import Optional, Dict, Any
+from exo.inference.shard import Shard
+from exo.inference.tinygrad.inference import TinygradDynamicShardInferenceEngine
+from exo.models import build_base_shard
+from exo.download.shard_download import LocalModelDownloader
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -155,10 +162,166 @@ async def infer(request: InferRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error during inference: {str(e)}")
 
 
+class ModelServer:
+    """
+    A server that handles model inference requests and communicates over stdin/stdout.
+    This allows for easy integration with other applications like codex.
+    """
+    def __init__(self, model_id: str, engine_name: str = "TinygradDynamicShardInferenceEngine", temperature: float = 0.7, max_tokens: int = 1024):
+        self.model_id = model_id
+        self.engine_name = engine_name
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.downloader = LocalModelDownloader()
+        self.engine = None
+        self.shard = None
+        self.request_id = "default"
+        
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler("model_server.log"),
+                logging.StreamHandler(sys.stderr)
+            ]
+        )
+        self.logger = logging.getLogger("ModelServer")
+
+    async def initialize(self):
+        """Initialize the model and engine."""
+        self.logger.info(f"Initializing model {self.model_id} with engine {self.engine_name}")
+        
+        # Create the shard
+        self.shard = build_base_shard(self.model_id, self.engine_name)
+        if self.shard is None:
+            raise ValueError(f"Model {self.model_id} not found or not supported by {self.engine_name}")
+        
+        # Initialize the engine
+        if self.engine_name == "TinygradDynamicShardInferenceEngine":
+            self.engine = TinygradDynamicShardInferenceEngine(self.downloader)
+        else:
+            raise ValueError(f"Unsupported engine: {self.engine_name}")
+        
+        # Send configuration info
+        config = {
+            "model_id": self.model_id,
+            "engine": self.engine_name,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "status": "initialized"
+        }
+        print(json.dumps(config))
+        sys.stdout.flush()
+        
+        # Log that we're ready
+        self.logger.info("Model initialized and ready")
+
+    async def process_request(self, request_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a single inference request."""
+        prompt = request_data.get("prompt", "")
+        temperature = request_data.get("temperature", self.temperature)
+        max_tokens = request_data.get("max_tokens", self.max_tokens)
+        
+        self.logger.info(f"Processing request with prompt length: {len(prompt)}")
+        
+        # Encode the prompt
+        input_tokens = await self.engine.encode(self.shard, prompt)
+        
+        # Generate text
+        response_tokens = []
+        for _ in range(max_tokens):
+            # Get the input tensor (including generated tokens so far)
+            input_data = input_tokens if not response_tokens else \
+                         np.concatenate([input_tokens, np.array(response_tokens)], axis=0)
+            input_data = input_data.reshape(1, -1)  # Add batch dimension
+            
+            # Run inference
+            output_data, _ = await self.engine.infer_tensor(self.request_id, self.shard, input_data)
+            
+            # Sample the next token
+            next_token = await self.engine.sample(output_data, temp=temperature)
+            
+            # Break on EOS token (assuming EOS is tokenizer-specific)
+            if next_token.item() == self.engine.tokenizer.eos_token_id:
+                break
+                
+            # Add the token to our response
+            response_tokens.append(next_token.item())
+        
+        # Decode the response
+        generated_text = await self.engine.decode(self.shard, np.array(response_tokens))
+        
+        self.logger.info(f"Generated response with length: {len(generated_text)}")
+        
+        return {
+            "text": generated_text,
+            "tokens": len(response_tokens)
+        }
+
+    async def run_server(self):
+        """Run the server in stdin/stdout mode."""
+        await self.initialize()
+        
+        while True:
+            try:
+                # Read a line from stdin
+                line = await asyncio.get_event_loop().run_in_executor(None, sys.stdin.readline)
+                line = line.strip()
+                
+                if not line:
+                    await asyncio.sleep(0.1)
+                    continue
+                
+                if line.lower() == "exit":
+                    self.logger.info("Received exit command")
+                    break
+                
+                # Parse the request
+                try:
+                    request_data = json.loads(line)
+                except json.JSONDecodeError:
+                    self.logger.error(f"Invalid JSON: {line}")
+                    print(f"RESPONSE: {{\"error\": \"Invalid JSON\"}}")
+                    sys.stdout.flush()
+                    continue
+                
+                # Process the request
+                response = await self.process_request(request_data)
+                
+                # Send the response
+                print(f"RESPONSE: {json.dumps(response)}")
+                sys.stdout.flush()
+                
+            except Exception as e:
+                self.logger.error(f"Error processing request: {str(e)}")
+                print(f"RESPONSE: {{\"error\": \"{str(e)}\"}}")
+                sys.stdout.flush()
+
+def main():
+    """Main entry point for the server."""
+    parser = argparse.ArgumentParser(description="Run a model server")
+    parser.add_argument("--model", type=str, default="phi-4", help="Model ID to use")
+    parser.add_argument("--engine", type=str, default="TinygradDynamicShardInferenceEngine", help="Inference engine to use")
+    parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")
+    parser.add_argument("--max_tokens", type=int, default=1024, help="Maximum tokens to generate")
+    parser.add_argument("--server_mode", action="store_true", help="Run in server mode (stdin/stdout)")
+    
+    args = parser.parse_args()
+    
+    server = ModelServer(
+        model_id=args.model,
+        engine_name=args.engine,
+        temperature=args.temperature,
+        max_tokens=args.max_tokens
+    )
+    
+    if args.server_mode:
+        asyncio.run(server.run_server())
+    else:
+        # If not in server mode, just initialize the model and exit
+        asyncio.run(server.initialize())
+        print("Model initialized successfully. Use --server_mode to run as a server.")
+
 if __name__ == "__main__":
-    import uvicorn
-    logger.info("Starting server with Uvicorn...")
-    # Ensure this runs from the root of the 'exo' project or adjust paths accordingly
-    # Running directly might fail imports if not in correct CWD or PYTHONPATH isn't set.
-    # Recommended to run using: uvicorn exo.server:app --reload --port 8000 from the project root (/exo)
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    main() 
